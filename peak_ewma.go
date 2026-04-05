@@ -24,6 +24,9 @@ type peakEWMAManager struct {
 }
 
 func NewPeakEWMAManager(cfg *config.Config) *peakEWMAManager {
+	if cfg == nil {
+		cfg = config.NewConfig()
+	}
 	p := &peakEWMAManager{
 		cfg:   cfg,
 		alpha: cfg.Alpha,
@@ -90,7 +93,7 @@ func (p *peakEWMAManager) instanceHealthy(ins *ServiceInstance) bool {
 	if !p.cfg.EnableHealth {
 		return true
 	}
-	v, ok := p.instanceEWMAStore.Load(string(ins.ID))
+	v, ok := p.instanceEWMAStore.Load(ins.ID)
 	if !ok {
 		return true
 	}
@@ -109,18 +112,16 @@ func (p *peakEWMAManager) update(r Record) {
 	v, ok := p.instanceEWMAStore.Load(r.InstanceID)
 	if !ok {
 		c := newInstanceEWMA(p.alpha)
-		if r.T == StartPendingEWMA {
-			c.startPending()
-			p.instanceEWMAStore.Store(r.InstanceID, c)
-		}
-	} else {
-		if r.T == StartPendingEWMA {
-			v.(*instanceEWMA).startPending()
-		} else {
-			v.(*instanceEWMA).finishPending()
-			v.(*instanceEWMA).update(r, p.cfg)
-		}
+		actual, _ := p.instanceEWMAStore.LoadOrStore(r.InstanceID, c)
+		v = actual
 	}
+
+	if r.T == StartPendingEWMA {
+		v.(*instanceEWMA).startPending()
+		return
+	}
+	v.(*instanceEWMA).finishPending()
+	v.(*instanceEWMA).update(r, p.cfg)
 }
 
 func (p *peakEWMAManager) tick() {
@@ -171,7 +172,15 @@ func (p *instanceEWMA) startPending() {
 
 // FinishPending ...
 func (p *instanceEWMA) finishPending() {
-	p.pendingRequests.Add(-1)
+	for {
+		current := p.pendingRequests.Load()
+		if current <= 0 {
+			break
+		}
+		if p.pendingRequests.CAS(current, current-1) {
+			break
+		}
+	}
 	p.lastAccessTime.Store(time.Now())
 }
 
@@ -204,7 +213,8 @@ func (p *instanceEWMA) score(c *config.Config, approximateAverageQPS int64) floa
 			// lastQPS = 150, averageQPS = 100, biasedQPS = 57.66
 			// lastQPS = 200, averageQPS = 100, biasedQPS = 1024
 			// lastQPS = 300, averageQPS = 100, biasedQPS = 59049
-			biasedQPS = math.Max(1.0, math.Pow(float64(p.qpsLastSecond.Load()/approximateAverageQPS), c.QPSBias))
+			ratio := float64(p.qpsLastSecond.Load()) / float64(approximateAverageQPS)
+			biasedQPS = math.Max(1.0, math.Pow(ratio, c.QPSBias))
 		}
 	}
 
@@ -247,4 +257,27 @@ type Record struct {
 
 type ServiceInstance struct {
 	ID string
+}
+
+// Select returns one service instance using Peak-EWMA based strategy.
+func (p *peakEWMAManager) Select(instances []*ServiceInstance) *ServiceInstance {
+	if len(instances) == 0 {
+		return nil
+	}
+	return p.peakEWMA(instances)
+}
+
+// Update updates runtime statistics for a service instance.
+func (p *peakEWMAManager) Update(r Record) {
+	p.update(r)
+}
+
+// Tick applies one decay step to tracked EWMA values.
+func (p *peakEWMAManager) Tick() {
+	p.tick()
+}
+
+// Clean removes stale instance state by timeout.
+func (p *peakEWMAManager) Clean() {
+	p.clean()
 }

@@ -2,6 +2,7 @@ package peakewma
 
 import (
 	"math"
+	"sync"
 	"time"
 
 	uberAtomic "go.uber.org/atomic"
@@ -16,6 +17,7 @@ const (
 // See: https://en.wikipedia.org/wiki/Moving_average#Exponential_moving_average
 type EWMA struct {
 	alpha float64
+	mu    sync.Mutex
 
 	lastEWMA     uberAtomic.Float64
 	lastTickTime time.Time
@@ -43,6 +45,9 @@ func (e *EWMA) Tick() {
 
 // Update adds an uncounted event with value `i`, and tries to flush.
 func (e *EWMA) Update(i int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
 	now := time.Now()
 
 	lastEWMA := e.lastEWMA.Load()
