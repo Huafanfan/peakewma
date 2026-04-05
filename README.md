@@ -1,7 +1,5 @@
 # peakewma
 
-> English version: [README_EN.md](./README_EN.md)
-
 `peakewma` 是一个基于 **Peak EWMA（指数加权移动平均）** 思路的负载均衡选择器实现，适用于高并发服务调用场景。它会综合考虑：
 
 - 请求延迟（EWMA）
